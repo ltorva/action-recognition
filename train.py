@@ -299,17 +299,41 @@ def train_model(model, train_loader, val_loader, criterion, optimizer, num_epoch
 
 def main():
     try:
-        # Set up wandb with API key from environment
-        wandb_api_key = os.getenv('WANDB_API_KEY')
-        if not wandb_api_key:
-            raise ValueError("WANDB_API_KEY not found in environment variables")
-        
-        os.environ["WANDB_API_KEY"] = wandb_api_key
-        wandb.login()
-        
-        # Initialize wandb
-        wandb.init(project="harvit-training", name=f"run_{datetime.now().strftime('%Y%m%d_%H%M%S')}")
-        
+        # 设置统一的配置参数
+        config = {
+            # 数据相关
+            'num_frames': 16,          # 每个视频的采样帧数
+            'batch_size': 32,          # 批次大小（根据 GPU 显存调整）
+            'num_classes': 12,         # 动作类别数
+            'num_workers': 8,          # 数据加载线程数
+            
+            # 模型结构
+            'img_size': 224,          # 图像尺寸
+            'patch_size': 32,         # Patch 大小
+            'embed_dim': 128,         # 嵌入维度
+            'depth': 2,               # Transformer 深度
+            'num_heads': 4,           # 注意力头数
+            
+            # 训练参数
+            'learning_rate': 2e-4,     # 学习率
+            'initial_learning_rate': 2e-4,  # 初始学习率
+            'weight_decay': 0.01,      # 权重衰减
+            'num_epochs': 30,          # 减少训练轮数加快训练
+            'warmup_epochs': 2,        # 预热轮数
+            'early_stopping': 5,       # 早停轮数
+            'early_stopping_patience': 5,  # 早停耐心值
+            
+            # 硬件设置
+            'device': 'cuda' if torch.cuda.is_available() else 'cpu'
+        }
+
+        # 初始化 wandb
+        wandb.init(
+            project="harvit-training",
+            name=f"run_{datetime.now().strftime('%Y%m%d_%H%M%S')}",
+            config=config
+        )
+
         # Set random seed for reproducibility
         seed_everything(42)
         
@@ -344,20 +368,6 @@ def main():
             torch.set_num_threads(os.cpu_count())
             logging.info(f"Using {os.cpu_count()} CPU threads")
         
-        # Configuration based on device
-        config = {
-            'num_frames': 8,
-            'batch_size': 16 if device.type == 'cuda' else 4,  # Smaller batch size for CPU
-            'num_epochs': 50,
-            'initial_learning_rate': 0.0001,
-            'warmup_epochs': 5,
-            'weight_decay': 0.01,
-            'early_stopping_patience': 5,
-            'device': device.type,
-            'num_workers': min(8, os.cpu_count()) if device.type == 'cuda' else 2
-        }
-        wandb.config.update(config)
-        
         # Create datasets with device-specific settings
         transform = transforms.Compose([
             transforms.ToPILImage(),
@@ -375,29 +385,30 @@ def main():
             GaussianNoise(std=0.1)
         ])
         
+        # 修改数据集路径
         train_dataset = UCF101Dataset(
-            root_dir="data/UCF101",
-            split_file="data/UCF101TrainTestSplits-RecognitionTask/trainlist01.txt",
+            root_dir="data/videos",          # 视频根目录
+            split_file="data/train.txt",     # 训练集文件
             transform=transform,
             temporal_transform=temporal_transform,
             num_frames=config['num_frames']
         )
         
         val_dataset = UCF101Dataset(
-            root_dir="data/UCF101",
-            split_file="data/UCF101TrainTestSplits-RecognitionTask/testlist01.txt",
+            root_dir="data/videos",         # 视频根目录
+            split_file="data/test.txt",     # 测试集文件
             transform=transform,
             temporal_transform=temporal_transform,
             num_frames=config['num_frames']
         )
         
-        # Create data loaders with device-specific settings
+        # 创建数据加载器
         train_loader = DataLoader(
             train_dataset,
             batch_size=config['batch_size'],
             shuffle=True,
             num_workers=config['num_workers'],
-            pin_memory=True if device.type == 'cuda' else False,  # Only pin memory for GPU
+            pin_memory=True if config['device'] == 'cuda' else False,
             drop_last=True
         )
         
