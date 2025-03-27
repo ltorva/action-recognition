@@ -302,29 +302,36 @@ def main():
         # 设置统一的配置参数
         config = {
             # 数据相关
-            'num_frames': 16,          # 每个视频的采样帧数
-            'batch_size': 32,          # 批次大小（根据 GPU 显存调整）
-            'num_classes': 12,         # 动作类别数
-            'num_workers': 8,          # 数据加载线程数
+            'num_frames': 16,
+            'batch_size': 16,  # 减小batch_size以提高稳定性
+            'num_classes': 12,
+            'num_workers': 4,  # 根据CPU核心数调整
             
-            # 模型结构
-            'img_size': 224,          # 图像尺寸
-            'patch_size': 32,         # Patch 大小
-            'embed_dim': 128,         # 嵌入维度
-            'depth': 2,               # Transformer 深度
-            'num_heads': 4,           # 注意力头数
+            # 模型结构 - 增加模型容量
+            'img_size': 224,
+            'patch_size': 16,  # 减小patch_size以获取更细粒度的特征
+            'embed_dim': 256,  # 增加嵌入维度
+            'depth': 4,       # 增加Transformer深度
+            'num_heads': 8,   # 增加注意力头数
             
-            # 训练参数
-            'learning_rate': 2e-4,     # 学习率
-            'initial_learning_rate': 2e-4,  # 初始学习率
-            'weight_decay': 0.01,      # 权重衰减
-            'num_epochs': 30,          # 减少训练轮数加快训练
-            'warmup_epochs': 2,        # 预热轮数
-            'early_stopping': 5,       # 早停轮数
-            'early_stopping_patience': 5,  # 早停耐心值
+            # 训练参数 - 调整学习策略
+            'learning_rate': 1e-4,  # 降低学习率
+            'initial_learning_rate': 1e-4,
+            'weight_decay': 0.05,   # 增加正则化
+            'num_epochs': 100,      # 增加训练轮数
+            'warmup_epochs': 5,     # 增加预热轮数
+            'early_stopping': 15,   # 增加早停轮数
+            'early_stopping_patience': 10,  # 增加早停耐心值
             
-            # 硬件设置
-            'device': 'cuda' if torch.cuda.is_available() else 'cpu'
+            # 新增优化参数
+            'dropout_rate': 0.2,    # 添加dropout
+            'gradient_clip': 1.0,   # 梯度裁剪 
+            'label_smoothing': 0.1, # 标签平滑
+            
+            # 硬件优化
+            'device': 'cuda',
+            'mixed_precision': True,  # 使用混合精度训练
+            'gradient_accumulation_steps': 2  # 梯度累积
         }
 
         # 初始化 wandb

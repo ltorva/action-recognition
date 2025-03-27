@@ -14,6 +14,8 @@ class RandomTemporalCrop:
     def __call__(self, frames):
         # frames shape: (T, C, H, W)
         t = frames.shape[0]
+        if t <= self.size:
+            return frames
         start = random.randint(0, t - self.size)
         return frames[start:start+self.size]
 
@@ -24,6 +26,8 @@ class TemporalMask:
     def __call__(self, frames):
         # frames shape: (T, C, H, W)
         t = frames.shape[0]
+        if t <= self.mask_size:
+            return frames
         start = random.randint(0, t - self.mask_size)
         frames[start:start+self.mask_size] = 0
         return frames
@@ -44,10 +48,8 @@ class UCF101Dataset(Dataset):
         if transform is None:
             self.transform = transforms.Compose([
                 transforms.ToPILImage(),
-                transforms.RandomResizedCrop(224, scale=(0.8, 1.0)),
-                transforms.RandomHorizontalFlip(),
-                transforms.ColorJitter(brightness=0.3, contrast=0.3, saturation=0.3),
-                transforms.RandomRotation(10),
+                transforms.Resize(256),  # 先将短边缩放到256
+                transforms.CenterCrop(224),  # 中心裁剪得到224x224
                 transforms.ToTensor(),
                 transforms.Normalize(mean=[0.485, 0.456, 0.406], 
                                   std=[0.229, 0.224, 0.225])
@@ -93,72 +95,141 @@ class UCF101Dataset(Dataset):
         video_path, label = self.samples[idx]
         full_path = os.path.join(self.root_dir, video_path)
         
-        # Read video frames more efficiently
+        # 读取视频帧
         frames = self._load_frames_efficiently(full_path)
         
-        if frames is None or len(frames) == 0:
-            # Return a blank video if loading fails
-            frames = torch.zeros((self.num_frames, 3, 224, 224))
+        if frames is None or frames.shape[1] < self.num_frames:
+            # 返回空白视频
+            frames = torch.zeros((3, self.num_frames, 224, 224))
             return frames, label
         
-        # Apply temporal transforms
+        # frames 此时的形状是 [C, T, H, W]
+        # 需要转换为 [T, C, H, W] 用于时序变换
+        frames = frames.permute(1, 0, 2, 3)
+        
+        # 应用时序变换
         if self.temporal_transform:
             frames = self.temporal_transform(frames)
         
-        # Verify tensor shape
-        if frames.shape != (self.num_frames, 3, 224, 224):
-            frames = self._resize_frames(frames)
-        
-        # Reshape to (C, T, H, W) for the model
+        # 转换回 [C, T, H, W] 用于返回
         frames = frames.permute(1, 0, 2, 3)
+        
         return frames, label
     
+    def _detect_person(self, frame):
+        """使用HOG检测器检测人物"""
+        hog = cv2.HOGDescriptor()
+        hog.setSVMDetector(cv2.HOGDescriptor_getDefaultPeopleDetector())
+        
+        # 检测人物
+        boxes, _ = hog.detectMultiScale(frame, 
+                                      winStride=(8, 8),
+                                      padding=(16, 16),
+                                      scale=1.05)
+        
+        if len(boxes) > 0:
+            # 选择最大的检测框
+            box = max(boxes, key=lambda x: x[2] * x[3])
+            x, y, w, h = box
+            
+            # 扩大检测框以包含更多上下文
+            margin = int(max(w, h) * 0.3)
+            x = max(0, x - margin)
+            y = max(0, y - margin)
+            w = min(frame.shape[1] - x, w + 2 * margin)
+            h = min(frame.shape[0] - y, h + 2 * margin)
+            
+            return (x, y, w, h)
+        return None
+
     def _load_frames_efficiently(self, video_path):
         try:
             cap = cv2.VideoCapture(video_path)
             if not cap.isOpened():
                 raise RuntimeError(f"Failed to open video file: {video_path}")
             
+            # 获取视频信息
             total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-            if total_frames == 0:
-                raise RuntimeError(f"No frames in video: {video_path}")
-            
-            # Sample frames uniformly
             frame_indices = np.linspace(0, total_frames - 1, self.num_frames, dtype=int)
             
             frames = []
+            bbox = None
+            last_valid_bbox = None
+            
             for frame_idx in frame_indices:
                 cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
                 ret, frame = cap.read()
-                if ret:
-                    # Convert BGR to RGB
-                    frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                if not ret:
+                    continue
                     
-                    # Apply spatial transforms
-                    if self.transform:
-                        frame = self.transform(frame)
+                frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                
+                # 更新检测框
+                if bbox is None or frame_idx % 5 == 0:
+                    bbox = self._detect_person(frame)
+                    if bbox is not None:
+                        last_valid_bbox = bbox
+                    else:
+                        bbox = last_valid_bbox  # 使用最后一个有效的检测框
+                
+                if bbox is not None:
+                    x, y, w, h = bbox
+                    # 计算正方形裁剪区域
+                    size = max(w, h)
+                    center_x = x + w // 2
+                    center_y = y + h // 2
                     
-                    frames.append(frame)
-                else:
-                    # If frame reading fails, add a blank frame
-                    frames.append(torch.zeros(3, 224, 224))
+                    # 确保正方形区域在图像范围内
+                    x1 = max(0, center_x - size // 2)
+                    y1 = max(0, center_y - size // 2)
+                    x2 = min(frame.shape[1], x1 + size)
+                    y2 = min(frame.shape[0], y1 + size)
+                    
+                    # 调整起始点，确保裁剪区域大小一致
+                    if x2 - x1 != size:
+                        x1 = max(0, x2 - size)
+                    if y2 - y1 != size:
+                        y1 = max(0, y2 - size)
+                    
+                    # 裁剪正方形区域
+                    frame = frame[y1:y2, x1:x2]
+                
+                # 应用变换
+                if self.transform:
+                    frame = self.transform(frame)
+                
+                frames.append(frame)
             
             cap.release()
-            return torch.stack(frames)
+            
+            if len(frames) == 0:
+                return None
+                
+            frames = torch.stack(frames)  # [T, C, H, W]
+            frames = frames.permute(1, 0, 2, 3)  # [C, T, H, W]
+            
+            return frames
             
         except Exception as e:
             print(f"Error loading video {video_path}: {str(e)}")
             return None
     
     def _resize_frames(self, frames):
-        # Ensure frames have the correct shape
         b, c, h, w = frames.shape
+        
+        # 保持宽高比的调整
         if b != self.num_frames:
-            # Temporally resize
-            frames = F.interpolate(frames.unsqueeze(0), size=(self.num_frames, h, w), 
-                                 mode='trilinear', align_corners=False).squeeze(0)
-        if h != 224 or w != 224:
-            # Spatially resize
-            frames = F.interpolate(frames, size=(224, 224), 
-                                 mode='bilinear', align_corners=False)
+            frames = F.interpolate(frames.unsqueeze(0), 
+                                 size=(self.num_frames, h, w),
+                                 mode='trilinear', 
+                                 align_corners=False).squeeze(0)
+        
+        # 计算保持宽高比的新尺寸
+        target_h, target_w = 288, 432  # 或其他适合的长宽比
+        if h != target_h or w != target_w:
+            frames = F.interpolate(frames, 
+                                 size=(target_h, target_w),
+                                 mode='bilinear',
+                                 align_corners=False)
+        
         return frames
