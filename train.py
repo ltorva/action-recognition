@@ -299,6 +299,9 @@ def train_model(model, train_loader, val_loader, criterion, optimizer, num_epoch
 
 def main():
     try:
+
+        cleanup_previous_runs()
+
         # 设置统一的配置参数
         config = {
             # 数据相关

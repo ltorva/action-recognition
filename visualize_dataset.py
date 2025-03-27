@@ -1,5 +1,5 @@
 import torch
-from dataset import UCF101Dataset
+from dataset import UCF101Dataset, RandomTemporalCrop
 from torchvision import transforms
 import matplotlib.pyplot as plt
 import numpy as np
@@ -10,13 +10,14 @@ def visualize_dataset_output():
     dataset = UCF101Dataset(
         root_dir="data/videos",
         split_file="data/train.txt",
-        num_frames=16
+        num_frames=16,
+        temporal_transform=RandomTemporalCrop(size=16),  # 添加时序变换
+        use_skeleton=False
     )
     
     # 获取第一个样本
     frames, label = dataset[0]
-    print(f"帧张量形状: {frames.shape}")
-    print(f"视频标签: {label}")
+    print(f"帧形状: {frames.shape}, 标签: {label}")
     
     # 使用固定的正方形显示比例
     base_size = 2.0  # 基础单位大小
@@ -55,7 +56,8 @@ def visualize_multiple_samples(num_samples=5):
     dataset = UCF101Dataset(
         root_dir="data/videos",
         split_file="data/train.txt",
-        num_frames=16
+        num_frames=16,
+        use_skeleton=True
     )
     
     # 对每个样本生成可视化
@@ -96,6 +98,25 @@ def visualize_multiple_samples(num_samples=5):
         plt.savefig(f'dataset_frames_sample_{sample_idx + 1}.png', 
                    bbox_inches='tight', dpi=300)
         plt.close()
+
+def visualize_skeleton(frames, skeleton_points):
+    """可视化骨骼点"""
+    if len(frames) != len(skeleton_points):
+        print(f"帧数量: {len(frames)}, 骨骼点数量: {len(skeleton_points)}")
+        return
+
+    for i, (frame, points) in enumerate(zip(frames, skeleton_points)):
+        frame = frame.numpy().transpose(1, 2, 0)  # [C, H, W] -> [H, W, C]
+        frame = (frame * 255).astype(np.uint8)
+        for x, y in points:
+            if 0 <= x < frame.shape[1] and 0 <= y < frame.shape[0]:
+                cv2.circle(frame, (x, y), radius=5, color=(0, 255, 0), thickness=-1)
+            else:
+                print(f"骨骼点超出范围: ({x}, {y})")
+        plt.subplot(4, 4, i + 1)
+        plt.imshow(frame)
+        plt.axis('off')
+    plt.show()
 
 if __name__ == "__main__":
     visualize_dataset_output()
